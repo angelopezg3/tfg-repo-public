@@ -1,0 +1,109 @@
+services:
+  redis:
+    image: redis:7
+    restart: always
+    container_name: redis-broker
+    ports:
+      - "6379:6379"
+    environment:
+      - TZ=Europe/Madrid
+    volumes:
+      - redis_data:/data
+    cpus: 1          # máximo 1 núcleos
+    mem_limit: 512m    # máximo 512 MB de RAM
+
+  api:
+    build: .
+    container_name: jobs-api
+    command: uvicorn jobs_API:app --host 0.0.0.0 --port 5000 --reload
+    # en producción quitar el --reload
+    restart: always
+    environment:
+      - TZ=Europe/Madrid
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+      - PYTHONIOENCODING=utf-8
+    volumes:
+      - .:/app
+      - ./pcaps:/pcaps
+    ports:
+      - "5000:5000"
+    depends_on:
+      - redis
+    cpus: 2          # máximo 2 núcleos
+    mem_limit: 2g    # máximo 2 GB de RAM
+
+  worker:
+    build: .
+    container_name: pcap-worker
+    #command: celery -A tasks worker --loglevel=info -Q pcaps -c 6 --pool=processes
+    command: celery -A tasks worker --loglevel=info -Q pcaps -c 12
+    restart: always
+    environment:
+      - CELERY_WORKER_NAME=pcap-worker
+      - TZ=Europe/Madrid
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+      - PYTHONIOENCODING=utf-8
+    volumes:
+      - .:/app
+      - ./pcaps:/pcaps
+      - ./data:/data
+    depends_on:
+      - redis
+    cpus: 6          # permite usar hasta 6 núcleos
+    mem_limit: 6g    # hasta 6 GB de RAM
+
+  maintenance-worker:
+    build: .
+    container_name: maintenance-worker
+    command: celery -A beat_schedule worker --loglevel=info -Q maintenance -c 2
+    restart: always
+    environment:
+      - CELERY_WORKER_NAME=maintenance-worker
+      - TZ=Europe/Madrid
+      - LANG=C.UTF-8
+      - LC_ALL=C.UTF-8
+      - PYTHONIOENCODING=utf-8
+    volumes:
+      - .:/app
+      - ./pcaps:/pcaps
+      - ./data:/data
+    depends_on:
+      - redis
+    cpus: 2
+    mem_limit: 2g
+
+  celery-beat:
+    build: .
+    container_name: celery-beat
+    command: celery -A beat_schedule beat -l info --schedule /data/celerybeat-schedule.db
+    restart: always
+    environment:
+      - TZ=Europe/Madrid
+    volumes:
+      - .:/app
+      - ./data:/data
+    depends_on:
+      - redis
+
+  flower:
+    build: .
+    container_name: flower
+    command: celery -A tasks flower --port=5555 --broker=redis://redis:6379/0
+    restart: always
+    environment:
+      - TZ=Europe/Madrid
+    ports:
+      - "5555:5555"
+    volumes:
+      - .:/app
+      - ./pcaps:/pcaps
+    depends_on:
+      - redis
+      - worker
+    cpus: 1          # máximo 1 núcleos
+    mem_limit: 1g    # máximo 1 GB de RAM
+
+volumes:
+  redis_data:

@@ -1,0 +1,32 @@
+# Ignorar entorno virtual
+.venv/
+
+# Ignorar archivos python
+__pycache__/
+*.pyc
+*.pyd
+
+# Archivos de base de datos local
+*.sqlite3
+db.sqlite3
+
+
+# Ignorar carpetas
+pcaps/*
+!pcaps/.gitkeep
+logs/*
+!logs/.gitkeep
+test/*
+
+# Ignorar ficheros
+pcap_summary.csv
+data/android_models.csv
+data/celerybeat-schedule.db
+DOC/comandos.txt
+DOC/ejemplos.txt
+DOC/pasos dumpcap.txt
+DOC/pendingProyecto.txt
+
+# Ignorar archivos IDE
+.idea/     # PyCharm
+

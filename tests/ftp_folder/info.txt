@@ -1,0 +1,1 @@
+Esto es un fichero en el servidor ftp inseguro
