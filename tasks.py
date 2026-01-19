@@ -8,7 +8,7 @@ License: MIT
 """
 
 import time as pytime
-from datetime import time,datetime
+from datetime import time, datetime
 import os
 from scapy.all import PcapReader
 from scapy.layers.inet import IP, TCP, UDP
@@ -23,7 +23,7 @@ import analyzer
 from pathlib import Path
 import csv
 import android_models_cache
-from celery_app import r,app
+from celery_app import r, app
 from utils import config, logger, parse_datetime, check_memory_usage, force_garbage_collection, ensure_pcap
 from contextlib import contextmanager
 
@@ -36,15 +36,18 @@ LOCAL_CAP_ROOT = Path(__file__).parent / "pcaps"
 
 def update_heartbeat(job_id: str):
     """
-    Actualiza heartbeat para indicar que el worker está vivo.
-    Expira automáticamente en 2 minutos si no se actualiza.
+    Actualiza heartbeat para indicar que el worker está vivo (en clave de Redis).
+    Expira automáticamente en 3 minutos si no se actualiza.
+    Args:
+        job_id
     """
     try:
         logger.debug(f"job:{job_id}:actualizando heartbeat {datetime.now().isoformat()}")
         r.set(f"job:{job_id}:heartbeat", datetime.now().isoformat())
         r.expire(f"job:{job_id}:heartbeat", 180)  # Expira en 3 minutos
     except Exception as e:
-        logger.warning(f"Error actualizando heartbeat para job {job_id}: {e}",exc_info=True)
+        logger.warning(f"Error actualizando heartbeat para job {job_id}: {e}", exc_info=True)
+
 
 # ============================================
 # FIN FUNCIONES DE MONITOREO
@@ -52,7 +55,12 @@ def update_heartbeat(job_id: str):
 
 @after_setup_logger.connect
 def on_celery_setup_logger(celery_logger, *args, **kwargs):
-    """Forzar que cada worker de Celery use nuestro logger personalizado."""
+    """
+    Hook(callback) de celery. Se ejecuta automaticamente cuando se configura el logger (al arrancar worker y antes
+    de empezar a procesar tareas). Configuramos para forzar que cada worker de Celery use nuestro logger personalizado.
+    Args:
+        celery_logger
+   """
     custom_logger = logger
     # Evitar duplicados: añadir handler solo si no existe
     if not custom_logger.handlers:
@@ -63,8 +71,17 @@ def on_celery_setup_logger(celery_logger, *args, **kwargs):
 
 
 def find_capture_files(folder: Path):
+    """
+    Busca ficheros de captura de red a procesar en la ruta pasada como parámetro.
+    Obtiene todos los archivos que sean .pcap, pcapng y .net y dependiendo el parámetro de configuración (config.json)
+    RECURSIVE_SEARCH extrae además solo en el nivel inicial o en subcarpetas
+    Args:
+        folder: ruta donde busca los archivos a procesar.
+
+    Returns: lista de archivos ordenados por fecha de modificación, los más antiguos primero.
+    """
     files = []
-    for pattern in ("*.pcap", "*.pcapng","*.net"):
+    for pattern in ("*.pcap", "*.pcapng", "*.net"):
         if config["RECURSIVE_SEARCH"]:
             files.extend(folder.rglob(pattern))
         else:
@@ -75,23 +92,35 @@ def find_capture_files(folder: Path):
 
 
 def process_capture_fast(capture_path: Path, output_csv: Path, last_heartbeat, job_id):
-    """Versión rápida usando Scapy (streaming)"""
+    """
+    Bloque principal en el procesado de un fichero de captura.
+
+    Args:
+        capture_path: ruta del fichero a procesar.
+        output_csv: fichero csv en el que se deben escribir los resultados.
+        last_heartbeat:
+        job_id:
+
+    Returns: last_heartbeat
+
+    """
     try:
-        snoop_file=False
+        snoop_file = False
         logger.debug(f"job:{job_id}:Analizando fichero {capture_path}")
         last_heartbeat = beat(last_heartbeat, job_id)
-        original_path=capture_path
-        capture_path, snoop_file = ensure_pcap(capture_path,job_id)
-        file_name=capture_path.name
+        original_path = capture_path
+        # si es un fichero snoop creamos un .pcap convertido y apuntamos capture path a ese nuevo fichero
+        capture_path, snoop_file = ensure_pcap(capture_path, job_id)
+        file_name = capture_path.name
 
-        #Cargar todos los ClientHello TLS y construir diccionario frame_number → SNI
-        frame_to_sni = analyzer.build_frame_sni_map(str(capture_path),job_id)
+        # Cargar todos los ClientHello TLS y construir diccionario frame_number → SNI
+        frame_to_sni = analyzer.build_frame_sni_map(str(capture_path), job_id)
 
         with open(output_csv, "a", newline="") as f:
             writer = csv.writer(f)
             packet_count = 0
             batch = []
-            android_models=android_models_cache.get_android_models()
+            android_models = android_models_cache.get_android_models()
 
             with PcapReader(str(capture_path)) as pcap_reader:
                 for pkt in pcap_reader:
@@ -99,80 +128,40 @@ def process_capture_fast(capture_path: Path, output_csv: Path, last_heartbeat, j
 
                     ts_packet = datetime.fromtimestamp(float(pkt.time)).isoformat()
 
-                    src_so=0
                     # Detectar si es IPv4 o IPv6
                     if pkt.haslayer(IP):
                         ip_layer = pkt.getlayer(IP)
                         ttl_number = ip_layer.ttl
-                        src = ip_layer.src
-                        dst = ip_layer.dst
-                        src_so = analyzer.return_ttl_so_name(ttl_number)
                     elif pkt.haslayer(IPv6):
                         ip_layer = pkt.getlayer(IPv6)
                         ttl_number = ip_layer.hlim
-                        src = ip_layer.src
-                        dst = ip_layer.dst
-                        src_so = analyzer.return_ttl_so_name(ttl_number)
                     else:
                         continue  # No IP, ignorar
+
+                    src = ip_layer.src
+                    dst = ip_layer.dst
+                    src_so = analyzer.return_ttl_so_name(ttl_number)
 
                     # Si el valor de config OUTGOING_TRAFFIC_ONLY es true solo analizamos las peticiones salientes (las que tienen por origen ip privada)
                     # si es false analizamos todas
                     if ip_address(src).is_private:
 
                         # -------DNS------
-                        dns_layer=pkt.getlayer(DNS)
-                        dnsqr_layer=pkt.getlayer(DNSQR)
-                        if dns_layer and dnsqr_layer  and getattr(dnsqr_layer, "qname", None):
-                            qry = dnsqr_layer.qname.decode(errors="ignore")
-                            ts_now= datetime.now().isoformat()
-                            batch.append([ts_now,file_name,ts_packet, src, dst,src_so,"DNS", "query", qry])
-
-                        #--------TCP------
-                        tcp_layer = pkt.getlayer(TCP)
-                        if tcp_layer and tcp_layer.payload:
-                            raw = bytes(tcp_layer.payload)
-                            #src_port = tcp_layer.sport
-                            dst_port = tcp_layer.dport
-
-
-                            # BUSQUEDA DE CREDENCIALES TCP (HTTP, FTP, etc)
-                            batch=analyzer.search_credentials(batch, raw, ts_packet,file_name, src,src_so, dst, dst_port,str(capture_path),packet_count,job_id)
-
-                            # HTTP HOSTs
-                            batch=analyzer.search_http_hosts(batch, raw, ts_packet,file_name, src,src_so, dst, job_id)
-                            # HTTP User-Agent
-                            batch=analyzer.search_user_agent(batch, raw, ts_packet,file_name, src,src_so, dst,  android_models,job_id)
-                            # TLS SNI usando diccionario preprocesado
-                            if packet_count in frame_to_sni:
-                                sni = frame_to_sni[packet_count]
-                                ts_now = datetime.now().isoformat()
-                                batch.append([ts_now,file_name,ts_packet, src, dst, src_so, "HTTPS", "sni", sni])
-
+                        process_dns(pkt, batch, file_name, ts_packet, src, dst, src_so)
+                        # --------TCP------
+                        process_tcp(pkt, batch, ts_packet, src, dst, src_so, capture_path, packet_count, job_id,
+                                    android_models, frame_to_sni)
                         # --- UDP ---
-                        udp_layer = pkt.getlayer(UDP)
-                        if udp_layer and udp_layer.payload:
-                            dst_port = udp_layer.dport
-                            raw = bytes(udp_layer.payload)
-                            # STUN sobre UDP
-                            batch = analyzer.search_stun_info(batch, raw, ts_packet,file_name, src,src_so, dst,dst_port)
+                        process_udp(pkt, batch, file_name, ts_packet, src, dst, src_so)
                     else:
-                        # en los paquetes entrantes de vuelta, es decir con destino una ip privada...SOLO MIRO EL STUN
+                        # en los paquetes entrantes de vuelta, es decir con destino una ip privada...solo miramos STUN
                         # --- UDP ---
-                        udp_layer = pkt.getlayer(UDP)
-                        if udp_layer and udp_layer.payload:
-                            dst_port = udp_layer.dport
-                            raw = bytes(udp_layer.payload)
-                            # STUN sobre UDP
-                            batch = analyzer.search_stun_info(batch, raw, ts_packet,file_name, src, "SO Unknown", dst, dst_port)
+                        process_udp_back(pkt, batch, file_name, ts_packet, src, dst)
 
-                    if len(batch) >= 1000:
-                        writer.writerows(batch)
-                        f.flush()
-                        batch.clear()
-                        last_heartbeat = beat(last_heartbeat, job_id)
+                    # escribimos a fichero csv cada BATCH_WRITE_NUM entradas (para mejorar rendimiento)
+                    batch_write(config["BATCH_WRITE_NUM"], batch, writer, f, last_heartbeat, job_id)
 
-
+            # si queda algo en el batch (menos de BATCH_WRITE_NUM) por ser el final, lo imprimimos
             if batch:
                 writer.writerows(batch)
                 f.flush()
@@ -181,44 +170,198 @@ def process_capture_fast(capture_path: Path, output_csv: Path, last_heartbeat, j
         if snoop_file:
             capture_path.unlink()
 
-        if config["MOVE_TO_PROCESSED"]:
-            # mover archivo procesado para no reprocesarlo
-            processed_dir = capture_path.parent / "processed"
-            processed_dir.mkdir(exist_ok=True)
-            if snoop_file:
-                file_to_move=original_path
-            else:
-                file_to_move=capture_path
-            try:
-                file_to_move.rename(processed_dir / file_to_move.name)
-            except Exception as e:
-                logger.error(f"job:{job_id}:Error moviendo {file_to_move}: {e}")
-        else:
-            if snoop_file:
-                file_to_remove=original_path
-            else:
-                file_to_remove=capture_path
-            # borrar archivo procesado.
-            try:
-                file_to_remove.unlink()
-                logger.debug(f"job:{job_id}:Archivo {capture_path} eliminado tras el procesamiento.")
-            except Exception as e:
-                logger.warning(f"job:{job_id}:Error al borrar {capture_path}: {e}")
+        clean_or_move_file(job_id, capture_path, original_path, snoop_file)
 
         logger.info(f"job:{job_id}:Procesado {packet_count} paquetes en {capture_path.name}")
         return last_heartbeat
 
     except Exception as e:
-        logger.error(f"job:{job_id}:Error procesando {capture_path}: {e}",exc_info=True)
+        logger.error(f"job:{job_id}:Error procesando {capture_path}: {e}", exc_info=True)
         last_heartbeat = beat(last_heartbeat, job_id)
         return last_heartbeat
 
-def update_to_started(self,job_id):
+
+def process_udp_back(pkt, batch, file_name, ts_packet, src, dst):
+    """
+    Procesa la parte UDP (solo protocolo STUN) de un paquete de vuelta (si la tiene).
+    Es paquete de vuelta porque la IP de origen es pública y solo miramos estos paquetes para obtener la IP de
+    destino de la llamada de Whatsapp.
+    Actualiza el listado batch con la info extraída.
+
+    Args:
+        pkt: paquete a procesar
+        batch: listado de salida
+        file_name: nombre del fichero que estamos procesando (para añadir contexto en la linea del csv)
+        ts_packet: timestamp del paquete (para añadir contexto en la linea del csv)
+        src: ip de origen (para añadir contexto en la linea del csv)
+        dst: ip de destino (para añadir contexto en la linea del csv)
+    """
+    udp_layer = pkt.getlayer(UDP)
+    if udp_layer and udp_layer.payload:
+        dst_port = udp_layer.dport
+        raw = bytes(udp_layer.payload)
+        # STUN sobre UDP
+        batch.append(analyzer.search_stun_info(batch, raw, ts_packet, file_name, src, "SO Unknown", dst, dst_port))
+
+
+def process_udp(pkt, batch, file_name, ts_packet, src, dst, src_so):
+    """
+    Procesa la parte UDP de un paquete (si la tiene). Con UDP solo miramos protocolo STUN para llamadas de Whatsapp.
+    Actualiza el listado batch con la info extraída.
+
+    Args:
+        pkt: paquete a procesar
+        batch: listado de salida
+        file_name: nombre del fichero que estamos procesando (para añadir contexto en la linea del csv)
+        ts_packet: timestamp del paquete (para añadir contexto en la linea del csv)
+        src: ip de origen (para añadir contexto en la linea del csv)
+        dst: ip de destino (para añadir contexto en la linea del csv)
+        src_so: valor de TTL e inferencia de SO (para añadir contexto en la linea del csv)
+    """
+    udp_layer = pkt.getlayer(UDP)
+    if udp_layer and udp_layer.payload:
+        dst_port = udp_layer.dport
+        raw = bytes(udp_layer.payload)
+        # STUN sobre UDP
+        batch.append(analyzer.search_stun_info(batch, raw, ts_packet, file_name, src, src_so, dst, dst_port))
+
+
+def process_dns(pkt, batch, file_name, ts_packet, src, dst, src_so):
+    """
+    Procesa la parte DNS de un paquete (si la tiene). Se extrae el nombre de dominio solicitado.
+    Actualiza el listado batch con la info extraída.
+
+    Args:
+        pkt: paquete a procesar
+        batch: listado de salida
+        file_name: nombre del fichero que estamos procesando (para añadir contexto en la linea del csv)
+        ts_packet: timestamp del paquete (para añadir contexto en la linea del csv)
+        src: ip de origen (para añadir contexto en la linea del csv)
+        dst: ip de destino (para añadir contexto en la linea del csv)
+        src_so: valor de TTL e inferencia de SO (para añadir contexto en la linea del csv)
+    """
+    dns_layer = pkt.getlayer(DNS)
+    dnsqr_layer = pkt.getlayer(DNSQR)
+    if dns_layer and dnsqr_layer and getattr(dnsqr_layer, "qname", None):
+        qry = dnsqr_layer.qname.decode(errors="ignore")
+        ts_now = datetime.now().isoformat()
+        batch.append([ts_now, file_name, ts_packet, src, dst, src_so, "DNS", "query", qry])
+
+
+def process_tcp(pkt, batch, ts_packet, src, dst, src_so, capture_path, packet_count, job_id, android_models,
+                frame_to_sni):
+    """
+    Procesa la parte TCP de un paquete (si la tiene). De esta capa se busca lo siguiente:
+        - credenciales
+        - HTTP hosts
+        - HTTP user-agents
+        - SNIs (Server Name Indication) en TLS
+    Actualiza el listado batch con la info extraída.
+    Args:
+        pkt: paquete a procesar
+        batch: listado de salida
+        ts_packet: timestamp del paquete (para añadir contexto en la linea del csv)
+        src: ip de origen (para añadir contexto en la linea del csv)
+        dst: ip de destino (para añadir contexto en la linea del csv)
+        src_so: valor de TTL e inferencia de SO (para añadir contexto en la linea del csv)
+        capture_path: nombre del fichero que estamos procesando (para añadir contexto en la linea del csv)
+        packet_count: numero del frame actual dentro del fichero de captura
+        job_id: id del job que ejecuta la tarea
+        android_models: cache de modelos android (nombres tecnicos y nombres comerciales)
+        frame_to_sni: diccionario con relación entre numero de frame y  sni (frame number-> sni)
+    """
+    tcp_layer = pkt.getlayer(TCP)
+    if tcp_layer and tcp_layer.payload:
+        raw = bytes(tcp_layer.payload)
+        # src_port = tcp_layer.sport
+        dst_port = tcp_layer.dport
+        file_name = Path(capture_path).name
+
+        # BUSQUEDA DE CREDENCIALES TCP (HTTP, FTP, etc)
+        batch.append(analyzer.search_credentials(batch, raw, ts_packet, src, src_so, dst, dst_port,
+                                                 str(capture_path), packet_count, job_id))
+        # HTTP HOSTs
+        batch.append(analyzer.search_http_hosts(batch, raw, ts_packet, file_name, src, src_so, dst, job_id))
+        # HTTP User-Agent
+        batch.append(
+            analyzer.search_user_agent(batch, raw, ts_packet, file_name, src, src_so, dst, android_models, job_id))
+        # TLS SNI usando diccionario preprocesado
+        if packet_count in frame_to_sni:
+            sni = frame_to_sni[packet_count]
+            ts_now = datetime.now().isoformat()
+            batch.append([ts_now, file_name, ts_packet, src, dst, src_so, "HTTPS", "sni", sni])
+
+
+def clean_or_move_file(job_id, capture_path, original_path, snoop_file):
+    """
+    Si el flag MOVE_TO_PROCESSED es true una vez procesados los archivos se mueven a carpeta processed.
+    Si el fichero es un snoop file (estension .net), debemos eliminar/mover el fichero original (en original_path)
+    Args:
+        job_id: job actual
+        capture_path: path del fichero snoop reconvertido a pcap
+        original_path: path original del fichero snoop (.net)
+        snoop_file: variable booleana que indica si es un snoop_file (.net) o no.
+    """
+    if snoop_file:
+        file_to_move_or_delete = original_path
+    else:
+        file_to_move_or_delete = capture_path
+
+    if config["MOVE_TO_PROCESSED"]:
+        # mover archivo procesado para no reprocesarlo
+        processed_dir = capture_path.parent / "processed"
+        processed_dir.mkdir(exist_ok=True)
+
+        try:
+            file_to_move_or_delete.rename(processed_dir / file_to_move_or_delete.name)
+        except Exception as e:
+            logger.error(f"job:{job_id}:Error moviendo {file_to_move_or_delete}: {e}")
+    else:
+        # borrar archivo procesado.
+        try:
+            file_to_move_or_delete.unlink()
+            logger.debug(f"job:{job_id}:Archivo {capture_path} eliminado tras el procesamiento.")
+        except Exception as e:
+            logger.warning(f"job:{job_id}:Error al borrar {capture_path}: {e}")
+
+
+def batch_write(num_rows, batch, writer, f, last_heartbeat, job_id):
+    """
+    Proceso para escribir en fichero csv en bloques de num_rows y no penalizar el rendimiento escribiendo cada vez
+    que se genera una línea de info.
+
+    Args:
+        num_rows: numero de lineas tras las que escribimos.
+        batch: lista donde se almacenan las líneas que hay que escribir.
+        writer: writer del csv.
+        f: fichero csv
+        last_heartbeat
+        job_id
+
+    Returns: heartbeat actualizado cuando se escribe a fichero.
+
+    """
+    if len(batch) >= num_rows:
+        writer.writerows(batch)
+        f.flush()
+        batch.clear()
+        last_heartbeat = beat(last_heartbeat, job_id)
+
+    return last_heartbeat
+
+
+def update_to_started(self, job_id):
+    """
+    Actualiza el estado de la tarea de celery de PENDING a STARTED
+    Args:
+        self: tarea de celery
+        job_id
+    """
     # Comprobar el estado actual
     current_state = self.AsyncResult(self.request.id).state
 
-    #result = AsyncResult(task_id, app=process_job.app)
-    #backend_state = result.state
+    # result = AsyncResult(task_id, app=process_job.app)
+    # backend_state = result.state
 
     # Si aún está en PENDING, lo forzamos manualmente a STARTED
     if current_state == 'PENDING':
@@ -226,37 +369,53 @@ def update_to_started(self,job_id):
         logger.info(f"job:{job_id}: estado forzado manualmente a STARTED (task_id={self.request.id})")
     else:
         pass
-        #logger.debug(f"job:{job_id}: ya estaba en estado {current_state}, no se fuerza STARTED")
+        # logger.debug(f"job:{job_id}: ya estaba en estado {current_state}, no se fuerza STARTED")
+
 
 def beat(last_heartbeat, job_id):
     """
-    Cuando pasan mas de HEARTBEAT_INTERVAL actualizamos el heartbeat
+    Cuando pasan más de HEARTBEAT_INTERVAL segundos desde la fecha del ultimo heartbeat actualizamos el heartbeat
+
+    Args:
+        last_heartbeat: fecha del ultimo heartbeat
+        job_id: id del job del que debemos actualizar/comprobar el heartbeat
+
+    Returns: heartbeat actualizado a ahora si ha pasado más del intervalo y sino el ultimo existente
     """
-    current_time=pytime.time()
-    if  current_time- last_heartbeat > config["HEARTBEAT_INTERVAL"]:
+    current_time = pytime.time()
+    if current_time - last_heartbeat > config["HEARTBEAT_INTERVAL"]:
         update_heartbeat(job_id)
         return current_time
     else:
         return last_heartbeat
-    
+
+
 @app.task(bind=True)
 def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
     """
-    Worker largo que:
+    Código que ejecuta el worker de celery. Resumen general de la funcionalidad:
+      - actualiza estado del job a STARTED.
       - comprueba que exista la carpeta a monitorizar (en caso negativo el worker acaba)
-      - espera hasta 'start_iso'
-      - mientras stop!=1
+      - espera hasta 'start_iso' (fecha de inicio del job)
+      - mientras stop!=1 (no se haya parado el job a través del api)
         - si ahora >= end: espera en modo pausa larga (DEEP_SLEEP_INTERVAL) hasta que se actualize fecha fin o se detenga.
         - si ahora < end procesa archivos
             - busca recursivamente .pcap/.net
             - procesa en orden más antiguo -> más nuevo
             - mueve los procesados a processed si FLAG habilitado
             - duerme SLEEP_INTERVAL y repite
+
+    Args:
+        self: instancia de la tarea celery actual
+        job_id: id del job actual
+        folder: carpeta en la que se buscan los archivos a procesar.
+        start_iso: fecha de inicio del job
+        end_iso: fecha de fin del job
     """
-    update_to_started(self,job_id)
+    update_to_started(self, job_id)
     last_heartbeat = pytime.time()
 
-    folder_path= get_folder_path_secure(folder)
+    folder_path = get_folder_path_secure(folder)
     output_csv = folder_path / "pcap_summary.csv"
     logger.debug("process job invocado")
 
@@ -269,15 +428,13 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
     is_paused = False
     last_end_dt = None
 
-    files_processed = 0
-
     # parse start
     try:
         start_dt = parse_datetime(start_iso)
         logger.info(f"job:{job_id}: start time={str(start_dt)}")
     except Exception as e:
         error_msg = f"Job {job_id} error parsing start time '{start_iso}': {e}"
-        logger.error(error_msg,exc_info=True)
+        logger.error(error_msg, exc_info=True)
         return error_msg
 
     last_start_dt = start_dt  # guardamos referencia para detectar cambios
@@ -294,24 +451,23 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
             logger.error(error_msg)
             return error_msg
         # si la fecha se ha modificado...
-        if start_dt!=last_start_dt:
+        if start_dt != last_start_dt:
             logger.info(
-            f"job:{job_id}: start modificado de {last_start_dt} a {start_dt}, esperando hora de inicio")
+                f"job:{job_id}: start modificado de {last_start_dt} a {start_dt}, esperando hora de inicio")
             last_start_dt = start_dt  # guardamos referencia para detectar cambios
         else:
             logger.debug(f"job:{job_id}:esperando a hora de inicio {start_dt}")
-            last_heartbeat=beat(last_heartbeat, job_id)
+            last_heartbeat = beat(last_heartbeat, job_id)
             pytime.sleep(config["START_DATE_WAIT_SLEEP"])
 
     logger.info(f"job:{job_id}: fecha de inicio {start_dt} alcanzada, iniciando procesamiento")
-
 
     # loop principal: la fecha de fin se lee desde Redis (se puede actualizar con la API)
     while True:
         # ========================================
         # HEARTBEAT: Actualizar cada HEARTBEAT_INTERVAL
         # ========================================
-        last_heartbeat=beat(last_heartbeat, job_id)
+        last_heartbeat = beat(last_heartbeat, job_id)
 
         # leer start en cada iteración por si se modifica
         start_iso_redis = r.get(f"job:{job_id}:start")
@@ -319,10 +475,10 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
             try:
                 start_dt_redis = parse_datetime(start_iso_redis)
                 # si la fecha de start cambió y es futura, esperar de nuevo
-                if start_dt_redis != last_start_dt and start_dt_redis<datetime.now():
+                if start_dt_redis != last_start_dt and start_dt_redis < datetime.now():
                     logger.info(
                         f"job:{job_id}: start modificado de {last_start_dt} a {start_dt_redis}, esperando de nuevo")
-                    update_redis_state_to("JOB_STATE_START_DATE_NOT_REACHED",job_id)
+                    update_redis_state_to("JOB_STATE_START_DATE_NOT_REACHED", job_id)
                     last_start_dt = start_dt_redis
 
                     # esperar solo si start aún no ha llegado
@@ -333,9 +489,10 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
                         start_iso_redis = r.get(f"job:{job_id}:start")
                         try:
                             start_dt_redis = parse_datetime(start_iso_redis)
-                            if start_dt_redis!=last_start_dt:
-                                if start_dt_redis<datetime.now():
-                                    logger.info(f"job:{job_id}: start modificado de {last_start_dt} a {start_dt_redis}, arrancando de nuevo")
+                            if start_dt_redis != last_start_dt:
+                                if start_dt_redis < datetime.now():
+                                    logger.info(
+                                        f"job:{job_id}: start modificado de {last_start_dt} a {start_dt_redis}, arrancando de nuevo")
                                     last_start_dt = start_dt_redis
                                 else:
                                     logger.info(f"job:{job_id}: start modificado de {last_start_dt} a {start_dt_redis}")
@@ -344,7 +501,8 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
                             start_dt_redis = datetime.now()
 
             except Exception as e:
-                logger.error(f"job:{job_id}: formato de start inválido en Redis: {start_iso_redis} - {e}",exc_info=True)
+                logger.error(f"job:{job_id}: formato de start inválido en Redis: {start_iso_redis} - {e}",
+                             exc_info=True)
 
         # comprobamos que la carpeta existe (si se borra el worker se elimina).
         if not folder_path.exists():
@@ -369,7 +527,6 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
             logger.info(f"Job {job_id} reanudado por API")
             is_paused = False
 
-
         # lee end en cada iteración (valor ISO string)
         end_iso = r.get(f"job:{job_id}:end")
         if not end_iso:
@@ -382,7 +539,7 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
         except Exception as e:
             error_msg = f"Job {job_id} invalid end format: {end_iso} - {e}"
             r.set(f"job:{job_id}:job_state", config["JOB_STATE_FINISHED_BY_ERROR"])
-            logger.error(error_msg,exc_info=True)
+            logger.error(error_msg, exc_info=True)
             return error_msg
 
         # Detectar si la fecha de fin fue actualizada
@@ -393,11 +550,12 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
 
         now = datetime.now()
         # comprobar fin ventana
-        # Si hemos llegado a fecha de fin entrar en modo pausa
+        # Si hemos llegado a fecha de fin entrar en modo pausa (no se elimina porque se puede extender la fecha
+        # de fin y tendría que continuar). La eliminación se hace desde el API o borrando la carpeta
         if now >= end_dt:
             if not is_paused:
                 logger.info(f"Job {job_id} alcanzada fecha de fin {end_dt}, entrando en modo pausa")
-                is_paused=True
+                is_paused = True
             logger.debug(f"job:{job_id}: en pausa, esperando actualizacion de fecha de fin")
             current = r.get(f"job:{job_id}:job_state")
             if not current or current != config["JOB_STATE_END_DATE_REACHED"]:
@@ -411,68 +569,10 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
             r.set(f"job:{job_id}:job_state", config["JOB_STATE_RUNNING"])
             is_paused = False
 
-        # buscar ficheros y procesarlos (los que están, y si llegan más tarde serán procesados en la siguiente iteración)
-        try:
-
-            current = r.get(f"job:{job_id}:job_state")
-            if not current or current != config["JOB_STATE_RUNNING"]:
-                r.set(f"job:{job_id}:job_state", config["JOB_STATE_RUNNING"])
-
-            files = find_capture_files(folder_path)
-            logger.debug(f"job:{job_id}: encontrados {len(files)} ficheros a procesar")
-            for fpath in files:
-                last_heartbeat=beat(last_heartbeat,job_id)
-                # antes de procesar, revisar stop/end de nuevo por si cambió
-                if r.get(f"job:{job_id}:stop") == "1":
-                    logger.info(f"Job {job_id} stopped by API during processing")
-                    break
-                end_iso = r.get(f"job:{job_id}:end")
-                if end_iso and datetime.now() >= parse_datetime(end_iso):
-                    logger.info(f"Job {job_id} reached end time during processing")
-                    break
-
-                logger.info(f"job:{job_id}: procesando {fpath}")
-                # crear cabecera si no existe
-                if not output_csv.exists():
-                    with open(output_csv, "w", newline="") as f:
-                        writer = csv.writer(f)
-                        writer.writerow(["timestamp", "src_ip", "dst_ip", "protocol", "info_type", "value"])
-
-                size=os.path.getsize(fpath)
-                size_kb = size / 1024
-
-                inicio = pytime.perf_counter()
-                last_heartbeat = process_capture_fast(fpath, output_csv, last_heartbeat, job_id)
-                fin = pytime.perf_counter()
-                logger.debug(f"job:{job_id}:Tiempo de procesado {fpath} (peso {size_kb} KB): {fin - inicio:.5f} segundos")
-                # ========================================
-                # CONTADOR: Incrementar archivos procesados
-                # ========================================
-                files_processed += 1
-                # Guardar progreso en Redis
-                r.set(f"job:{job_id}:files_processed", files_processed)
-
-                # ========================================
-                # MEMORIA: Verificar cada N archivos
-                # ========================================
-                if files_processed % config["MEMORY_CHECK_INTERVAL"] == 0:
-                    memory_mb = check_memory_usage()
-                    logger.info(f"job:{job_id}: {files_processed} archivos procesados, memoria: {memory_mb:.2f} MB")
-
-                    # Si supera el límite, forzar GC
-                    if memory_mb > config["MAX_MEMORY_MB"]:
-                        logger.warning(
-                            f"job:{job_id}: límite de memoria alcanzado ({memory_mb:.2f} MB > {config['MAX_MEMORY_MB']} MB), forzando GC")
-                        force_garbage_collection()
-
-        except Exception as e:
-            logger.error(f"[process_job] Error listando o procesando ficheros en {folder}: {e}",exc_info=True)
-            # Guardar el error en Redis para debugging
-            r.set(f"job:{job_id}:last_error", str(e))
-            r.set(f"job:{job_id}:last_error_at", datetime.now().isoformat())
+        process_files(job_id, folder_path, output_csv, last_heartbeat)
 
         files = find_capture_files(folder_path)
-        if len(files)>0:
+        if len(files) > 0:
             # si hay mas ficheros para procesar no dormimos, directamente volvemos a ejecutar
             logger.debug(f"job:{job_id}: existen mas ficheros para procesar {len(files)}. No duermo")
             continue
@@ -480,14 +580,94 @@ def process_job(self, job_id: str, folder: str, start_iso: str, end_iso: str):
             logger.debug(f"job:{job_id}: durmiendo {config['SLEEP_INTERVAL']} segundos")
             pytime.sleep(config["SLEEP_INTERVAL"])
 
-"""
-@worker_process_shutdown.connect
-def on_child_shutdown(**kwargs):
-    logger.debug("Worker hijo se ha terminado/reiniciado", kwargs)
-"""
+
+def process_files(job_id, folder_path, output_csv, last_heartbeat):
+    """
+    Bucle de procesamiento de ficheros de capturas de red (controla condiciones de ejecución), tiempos de procesamiento
+    y tamaño de los ficheros. Además, cada MEMORY_CHECK_INTERVAL ficheros comprueba la memoria consumida y si supera
+    el maximo definido MAX_MEMORY_MB fuerza la recolección de basura (garbage collector)
+
+    Args:
+        job_id
+        folder_path
+        output_csv
+        last_heartbeat
+
+    """
+    # buscar ficheros y procesarlos (los que están, y si llegan más tarde serán procesados en la siguiente iteración)
+    try:
+        files_processed = 0
+        current = r.get(f"job:{job_id}:job_state")
+        if not current or current != config["JOB_STATE_RUNNING"]:
+            r.set(f"job:{job_id}:job_state", config["JOB_STATE_RUNNING"])
+
+        files = find_capture_files(folder_path)
+        logger.debug(f"job:{job_id}: encontrados {len(files)} ficheros a procesar")
+        for fpath in files:
+            last_heartbeat = beat(last_heartbeat, job_id)
+            # antes de procesar, revisar stop/end de nuevo por si cambió
+            if r.get(f"job:{job_id}:stop") == "1":
+                logger.info(f"Job {job_id} stopped by API during processing")
+                break
+            end_iso = r.get(f"job:{job_id}:end")
+            if end_iso and datetime.now() >= parse_datetime(end_iso):
+                logger.info(f"Job {job_id} reached end time during processing")
+                break
+
+            logger.info(f"job:{job_id}: procesando {fpath}")
+            # crear cabecera si no existe
+            if not output_csv.exists():
+                with open(output_csv, "w", newline="") as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["timestamp", "src_ip", "dst_ip", "protocol", "info_type", "value"])
+
+            size = os.path.getsize(fpath)
+            size_kb = size / 1024
+
+            inicio = pytime.perf_counter()
+            last_heartbeat = process_capture_fast(fpath, output_csv, last_heartbeat, job_id)
+            fin = pytime.perf_counter()
+            logger.debug(f"job:{job_id}:Tiempo de procesado {fpath} (peso {size_kb} KB): {fin - inicio:.5f} segundos")
+            # ========================================
+            # CONTADOR: Incrementar archivos procesados
+            # ========================================
+            files_processed += 1
+            # Guardar progreso en Redis
+            r.set(f"job:{job_id}:files_processed", files_processed)
+
+            # ========================================
+            # MEMORIA: Verificar cada N archivos
+            # ========================================
+            if files_processed % config["MEMORY_CHECK_INTERVAL"] == 0:
+                memory_mb = check_memory_usage()
+                logger.info(f"job:{job_id}: {files_processed} archivos procesados, memoria: {memory_mb:.2f} MB")
+
+                # Si supera el límite, forzar GC
+                if memory_mb > config["MAX_MEMORY_MB"]:
+                    logger.warning(
+                        f"job:{job_id}: límite de memoria alcanzado ({memory_mb:.2f} MB > {config['MAX_MEMORY_MB']} MB), forzando GC")
+                    force_garbage_collection()
+
+    except Exception as e:
+        logger.error(f"[process_job] Error listando o procesando ficheros en {folder_path}: {e}", exc_info=True)
+        # Guardar el error en Redis para debugging
+        r.set(f"job:{job_id}:last_error", str(e))
+        r.set(f"job:{job_id}:last_error_at", datetime.now().isoformat())
+
+
 @task_prerun.connect
 def task_prerun_handler(sender=None, task_id=None, task=None, args=None, **kwargs):
-    """Se ejecuta ANTES de que comience la tarea"""
+    """
+    Código que se ejecuta ANTES de que comience la tarea. Se muestra info en log y además se añade clave en
+    redis registrando la hora en que se inició la tarea.
+
+    Args:
+        sender: clase o función de la tarea que emite la señal
+        task_id: id de la tarea
+        task: instancia de la tarea que se va a ejecutar.
+        args
+        **kwargs
+    """
     if task.name == 'tasks.process_job' and len(args) >= 1:
         job_id = args[0]
         logger.info(f"job:{job_id}: tarea iniciando (task_id={task_id})")
@@ -496,26 +676,49 @@ def task_prerun_handler(sender=None, task_id=None, task=None, args=None, **kwarg
 
 @task_postrun.connect
 def task_postrun_handler(sender=None, task_id=None, task=None, args=None, state=None, **kwargs):
-    """Se ejecuta DESPUÉS de que termine la tarea (éxito o fallo). La tarea solo debería terminar por petición delete
-        del API.
     """
+    Código que se ejecuta DESPUÉS de que termine la tarea (éxito o fallo).
+    La tarea solo debería terminar por petición delete del API (o por borrado de la carpeta a procesar).
+
+    Args:
+        sender: clase o función de la tarea que emite la señal
+        task_id: id de la tarea
+        task:  instancia de la tarea que se va a ejecutar.
+        args:
+        state: valor que indica como terminó la tarea (SUCCESS, FAILURE, RETRY, REVOKED, IGNORED...)
+        **kwargs
+    """
+
     if task.name == 'tasks.process_job' and len(args) >= 1:
         job_id = args[0]
         logger.info(f"job:{job_id}: tarea finalizada con estado {state}")
         r.set(f"job:{job_id}:task_finished_at", datetime.now().isoformat())
 
+
 @worker_ready.connect
 def recover_active_jobs(sender, **kwargs):
+    """
+    Código que se ejecuta cuando un worker arranca. Invocamos a nuestra función recover_active_jobs_logic para
+    regularizar el estado de los jobs activos con lo que debería estarse ejecutando.
+    Args:
+        sender: clase o función de la tarea que emite la señal
+        **kwargs
+    """
     recover_active_jobs_logic("worker_ready")
+
 
 @contextmanager
 def redis_lock(key: str, timeout: int = 600):
     """
-        Lock en Redis para evitar ejecuciones concurrentes de la recuperación de jobs activos.
-        Como recover_active_jobs_logic se puede ejecutar por la tarea programada o por el worker_ready.connect hay
-        que controlar que no se ejecuta a la vez y pueda generar problemas
+    Lock en Redis para evitar ejecuciones concurrentes de la recuperación de jobs activos.
+    Como recover_active_jobs_logic se puede ejecutar por la tarea programada o por el worker_ready.connect hay
+    que controlar que no se ejecuta a la vez y pueda generar problemas
+    Args:
+        key: nombre del lock
+        timeout: tiempo máximo que estará el lock (para evitar que se quede para siempre)
 
     """
+
     lock_key = f"lock:{key}"
     got_lock = r.set(lock_key, "1", nx=True, ex=timeout)
     try:
@@ -527,10 +730,11 @@ def redis_lock(key: str, timeout: int = 600):
         if got_lock:
             r.delete(lock_key)
 
+
 def recover_active_jobs_logic(source):
     """
-    Recupera y relanza jobs activos. Se puede invocar desde el api o automaticamente al iniciar el worker.
-    Además existe una tarea de mantenimiento que lo ejecuta cada hora.
+    Recupera y relanza jobs activos. Se puede invocar desde el api, automaticamente al iniciar el worker o cada hora
+    con una tarea de mantenimiento.
     La razón de ser de este metodo es que aunque la info de redis si se persiste no pasa lo mismo con celery.
     Entonces si se cae el celery al arrancar hay que hacer una sincro entre lo que dice redis que debería estar corriendo
     y lo que hay en celery.
@@ -541,8 +745,11 @@ def recover_active_jobs_logic(source):
             - Tienen task_id pero no están activos en ningún worker
 
     Se controla además con un lock que este codigo no se invoque simultáneamente desde varios sitios.
-    """
+    Args:
+        source: origen desde donde se invoca a esta función. Puede ser desde el API, cuando un worker arranca o cada
+        x tiempo con un beat programado (cada hora).
 
+    """
 
     with redis_lock("recover_active_jobs", timeout=1800) as acquired:
         if not acquired:
@@ -562,9 +769,13 @@ def recover_active_jobs_logic(source):
             logger.info("=" * 60)
             logger.info("Worker iniciado: comprobando jobs activos en Redis...")
             logger.info("=" * 60)
-    elif source=="api":
+    elif source == "api":
         logger.info("=" * 60)
         logger.info("API Request a recover_active_jobs: comprobando jobs activos en Redis...")
+        logger.info("=" * 60)
+    elif source == "beat_schedule":
+        logger.info("=" * 60)
+        logger.info("Beat Schedule recover_active_jobs: comprobando jobs activos en Redis...")
         logger.info("=" * 60)
 
     relaunched_count = 0
@@ -582,7 +793,7 @@ def recover_active_jobs_logic(source):
                 logger.debug(f"Tarea activa detectada: {t['id']} en {worker}")
 
     except Exception as e:
-        logger.warning(f"No se pudo consultar tareas activas en workers: {e}",exc_info=True)
+        logger.warning(f"No se pudo consultar tareas activas en workers: {e}", exc_info=True)
 
     logger.info(f"Total de tareas realmente activas en workers: {len(active_tasks)}")
 
@@ -605,7 +816,7 @@ def recover_active_jobs_logic(source):
                 # 2. Obtener info mínima del job
                 folder = r.get(f"job:{job_id}:folder")
                 start_iso = r.get(f"job:{job_id}:start")
-                end_iso=r.get(f"job:{job_id}:end")
+                end_iso = r.get(f"job:{job_id}:end")
                 task_id = r.get(f"job:{job_id}:task_id")
 
                 if not folder or not start_iso:
@@ -688,7 +899,8 @@ def recover_active_jobs_logic(source):
 
                         except Exception as e:
                             # Error al consultar Celery → probablemente la tarea no existe
-                            logger.warning(f"Job {job_id}: error consultando backend de task {task_id}: {e}",exc_info=True)
+                            logger.warning(f"Job {job_id}: error consultando backend de task {task_id}: {e}",
+                                           exc_info=True)
                             should_relaunch = True
                             reason = "error consultando backend (tarea probablemente no existe)"
 
@@ -698,7 +910,7 @@ def recover_active_jobs_logic(source):
 
                     new_task = app.send_task(
                         'tasks.process_job',  # Nombre completo de la tarea
-                        args=[job_id, folder, start_iso,end_iso],
+                        args=[job_id, folder, start_iso, end_iso],
                         queue='pcaps'
                     )
 
@@ -725,9 +937,31 @@ def recover_active_jobs_logic(source):
     logger.info(f"  - Errores: {error_count}")
     logger.info("=" * 60)
 
+
+def update_redis_state_to(new_state, job_id):
+    """
+    Actualiza el estado de la clave job_state de un job en redis
+
+    Args:
+        new_state: nuevo valor a provisionar.
+        job_id: id del job a actualizar
+    """
+    current = r.get(f"job:{job_id}:job_state")
+    if not current or current != config[new_state]:
+        r.set(f"job:{job_id}:job_state", config[new_state])
+
+
 def main(folder: str):
-    """Procesa todos los archivos .pcap/.net en la carpeta especificada de forma standalone."""
-    logger.info("Ejecución de procesado de ficheros desde MAIN, sin tasks de celery, modo standalone procesamiento secuencial")
+    """
+    Procesa todos los archivos .pcap/.net en la carpeta especificada de forma standalone (no usa el sistema de workers,
+    solo usar para pruebas).
+
+    Args:
+        folder: carpeta donde se encuentran los ficheros a procesar.
+    """
+
+    logger.info(
+        "Ejecución de procesado de ficheros desde MAIN, sin tasks de celery, modo standalone procesamiento secuencial")
     folder_path = get_folder_path_secure(folder)
     if not folder_path.exists() or not folder_path.is_dir():
         logger.error(f"La carpeta {folder} no existe o no es un directorio")
@@ -748,17 +982,22 @@ def main(folder: str):
 
     for fpath in files:
         logger.info(f"Procesado secuencial fichero {fpath}")
-        process_capture_fast(fpath, output_csv,pytime.time(), "11111")
+        process_capture_fast(fpath, output_csv, pytime.time(), "11111")
 
-def update_redis_state_to(new_state,job_id):
-    current = r.get(f"job:{job_id}:job_state")
-    if not current or current != config[new_state]:
-        r.set(f"job:{job_id}:job_state", config[new_state])
 
 def get_folder_path_secure(folder):
     """
-    Devuelve el objeto ruta de un string ruta tanto para docker como para ejecución local
+    Devuelve el objeto PATH de un string que representa una ruta tanto para docker como para ejecución local
+    Esta lógica es necesaria porque las rutas no llevan los mismos separadores en windows que en linux (docker), por
+    eso cuando ejecutamos en modo standalone (windows) es distinto de si usamos el sistema de workers con docker.
+
+    Args:
+        folder: string de la ruta de la carpeta carpeta
+
+    Returns: objeto PATH tanto para windows como linux (docker)
+
     """
+
     if config["TASKS_LOCAL"]:
         folder_param = folder
         subfolder_name = Path(folder_param).name
@@ -767,8 +1006,9 @@ def get_folder_path_secure(folder):
         folder_path = Path(folder)
     return folder_path
 
+
 if __name__ == "__main__":
-    #recover_active_jobs_logic()
-    # Ruta de la carpeta con archivos .pcap (ajusta según tu caso)
+    # recover_active_jobs_logic()
+    # Ruta de la carpeta con archivos .pcap
     folder_to_process = "./pcaps/a"
     main(folder_to_process)
