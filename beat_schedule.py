@@ -57,7 +57,7 @@ else:
 
 @app.task(name="beat_schedule.actualizar_catalogo_android")
 def actualizar_catalogo_android():
-    """Tarea periódica que actualiza el catálogo de dispositivos Android."""
+    """Tarea periódica que comprueba si es necesario actualizar el catálogo de dispositivos Android."""
     logger.info("Actualizando catalogo Android con tarea periodica...")
     try:
         mapping = android_models_cache.load_android_models()
