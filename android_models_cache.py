@@ -5,6 +5,13 @@ Grado en Ingeniería Informática - UNIR
 Author: angelopezg3
 Year: 2026
 License: MIT
+
+Módulo para gestión de la cache de dispositivos Android.
+Cache de dos niveles:
+ - primer nivel se descarga de internet fichero csv con la info. Mediante tarea programada se vuelve a descargar
+  cada cierto tiempo.
+ - segundo nivel cache en memoria en la que se carga el fichero csv. Tiene un ttl y si este expira se vuelve a
+  realizar la carga en memoria a partir del csv que se disponga.
 """
 
 from datetime import datetime, timedelta
@@ -28,6 +35,7 @@ def load_android_models():
     Esta función se invoca con un celery beat según la config de beat_schedule.py o desde read_android_cache_file si no
     existe el fichero local cuando un proceso vaya a usarlo.
 
+    Returns: diccionario con la info de los modelos Android
     """
     need_download = True
     local_cache = config["ANDROID_DEVICES_CACHE_FILE"]
@@ -108,8 +116,14 @@ def read_android_cache_file(local_cache):
     """
     Lee el CSV de modelos Android ya descargado.
     En el caso de que no existiera se descargaría (no debería pasar ya que existe un proceso diario de comprobación
-    y descarga si fuera necesario
+    y descarga si fuera necesario)
+
+    Args:
+        local_cache: fichero csv con la info previamente descargada
+
+    Returns: diccionario con la info de los modelos Android
     """
+
     path = Path(local_cache)
     if not path.exists():
         logger.warning(f"No se encuentra la cache Android: {path}")
@@ -129,6 +143,8 @@ def read_android_cache_file(local_cache):
 def get_android_models():
     """
     Lee los modelos de la cache de memoria temporal salvo que haya expirado en cuyo caso va al fichero a recargar la info.
+
+    Returns: diccionario con la info de los modelos Android
     """
     global _last_load, _android_models_cache
     if pytime.time() - _last_load > memory_cache_expiration or _android_models_cache is None:
