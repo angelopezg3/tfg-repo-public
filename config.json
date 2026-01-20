@@ -51,5 +51,7 @@
   "OLD_LOGS_KEEP_DAYS":180,
   "_comment_OLD_LOGS_KEEP_DAYS": "Numero de días que se guardan los logs antiguos.",
   "MAX_PACKETS_BACK": 30,
-  "_comment_MAX_PACKETS_BACK": "Numero de paquetes que el proceso mira hacia atras para intentar entontrar el comando o peticion"
+  "_comment_MAX_PACKETS_BACK": "Numero de paquetes que el proceso mira hacia atras para intentar entontrar el comando o peticion",
+  "BATCH_WRITE_NUM": 500,
+  "_comment_BATCH_WRITE_NUM": "Numero de líneas para escribir de golpe en el fichero de salida"
 }
