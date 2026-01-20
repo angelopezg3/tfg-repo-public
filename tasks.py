@@ -5,6 +5,8 @@ Grado en Ingeniería Informática - UNIR
 Author: angelopezg3
 Year: 2026
 License: MIT
+
+Módulo para la gestión de las tareas de procesamiento de ficheros y de restauración de jobs.
 """
 
 import time as pytime
