@@ -61,7 +61,7 @@ app.conf.update(
     #worker_pool_restarts=True,
 
     # Visibilidad de tareas
-    #result_expires=86400,  # Resultados expiran en 24h
+    result_expires=86400,  # Resultados expiran en 24h
 
     # Tracking de estado
     task_track_started=True,  # Marcar tareas como STARTED
