@@ -5,6 +5,11 @@ Grado en Ingeniería Informática - UNIR
 Author: angelopezg3
 Year: 2026
 License: MIT
+
+Módulo para la ejecución de tareas de mantenimiento de forma programada (similar a crontab). Estas tareas son:
+- actualización de cache de dispositivos Android.
+- comprobación de sincronización de jobs
+- compresión y limpieza de ficheros de logs
 """
 
 from celery.schedules import crontab
@@ -52,7 +57,7 @@ else:
 
 @app.task(name="beat_schedule.actualizar_catalogo_android")
 def actualizar_catalogo_android():
-    """Tarea periódica que actualiza el catálogo Android."""
+    """Tarea periódica que actualiza el catálogo de dispositivos Android."""
     logger.info("Actualizando catalogo Android con tarea periodica...")
     try:
         mapping = android_models_cache.load_android_models()
@@ -62,15 +67,19 @@ def actualizar_catalogo_android():
 
 @app.task(name="beat_schedule.recover_active_jobs")
 def recover_active_jobs():
-    tasks.recover_active_jobs_logic()
+    """
+    Tarea periódica para ejecutar sincronización de jobs
+    """
+    tasks.recover_active_jobs_logic("beat_schedule")
 
 @app.task(name="beat_schedule.compress_and_clean_logs")
 def compress_and_clean_logs():
     """
-        Rotación de logs:
-        1. Procesa archivos temporales generados por ConcurrentRotatingFileHandler.
-        2. Genera nombre final con fecha (y contador si hay duplicados).
-        3. Comprime a .gz.
+        Tarea periódica para rotación y limpieza de logs:
+            1. Procesa archivos temporales generados por ConcurrentRotatingFileHandler.
+            2. Genera nombre final con fecha (y contador si hay duplicados).
+            3. Comprime a .gz.
+            4. Elimina logs comprimidos antiguos
         """
     log_dir = config.get("LOG_DIR", "./logs")
     # Buscar logs temporales
