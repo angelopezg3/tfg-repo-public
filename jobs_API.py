@@ -5,6 +5,8 @@ Grado en Ingeniería Informática - UNIR
 Author: angelopezg3
 Year: 2026
 License: MIT
+
+Módulo para el API Rest de provisión/gestión de trabajos
 """
 
 from typing import Optional
@@ -18,7 +20,7 @@ import redis
 import uuid
 import tasks
 from datetime import datetime
-from utils import config,logger
+from utils import config, logger
 
 # url doc Swagger interactivo http://localhost:5000/docs
 # url doc alternativa http://localhost:5000/redoc
@@ -28,7 +30,7 @@ from utils import config,logger
 # ===============================
 LOCAL_CAP_ROOT = Path(__file__).parent / "pcaps"
 
-# Redis: cambia host según entorno
+# Redis: cambiar host según entorno
 redis_host = "localhost" if config["API_LOCAL"] else "redis"
 r = redis.Redis(host=redis_host, port=6379, db=0, decode_responses=True)
 
@@ -48,6 +50,7 @@ app = FastAPI(
 
 # Diccionario local para reconstruir jobs activos
 jobs = {}
+
 
 # ===============================
 # MODELOS Pydantic
@@ -70,7 +73,7 @@ class JobUpdate(BaseModel):
 
 def rebuild_jobs_from_redis():
     """
-    Reconstruye el diccionario local 'jobs' desde Redis al arrancar el API.
+    Reconstruye el diccionario local de 'jobs' desde Redis al arrancar el API.
     """
     logger.info("Reconstruyendo jobs desde Redis...")
     global jobs
@@ -80,7 +83,8 @@ def rebuild_jobs_from_redis():
         task_id = r.get(key)
         if task_id:
             jobs[job_id] = AsyncResult(task_id, app=celery_app)
-            logger.debug(f"Recreado job {job_id} con task_id {task_id}, ready {jobs[job_id].ready()} y celery_status {jobs[job_id].status}")
+            logger.debug(
+                f"Recreado job {job_id} con task_id {task_id}, ready {jobs[job_id].ready()} y celery_status {jobs[job_id].status}")
     logger.info("Reconstruccion finalizada.")
 
 
@@ -90,23 +94,26 @@ def rebuild_jobs_from_redis():
 
 @app.post("/jobs")
 def add_job(req: JobCreate):
-    """Crea un nuevo job y lo encola en Celery."""
     """
+    Crea un nuevo job y lo encola en Redis para que celery lo procese.
     Un job es un objeto lógico que almacenamos en REDIS(broker) y que se procesa por una worker(celery) con un task_id concreto.
-    Un worker puede tener varias tareas en paralelo pero en nuestro caso solo tiene una.
+    Un worker puede tener varias tareas en paralelo pero en nuestro caso solo va a tener una.
     Para monitorizar varias carpetas se crean varios workers, y cada worker tiene una única tarea para procesar en orden.
 
     Limitaciones con las fechas:
         * fecha de start del job no puede ser anterior a ahora
         * fecha de end del job no puede ser anterior a ahora
         * fecha de start no puede ser anterior a end
-        
+
     POST /jobs
     {
       "folder": "/pcaps/carpeta1",
       "start": "2025-09-24 10:00:00",
       "end":   "2025-09-24 11:00:00"
     }
+    Args:
+        req:
+
     """
     if config["API_LOCAL"]:
         folder_param = req.folder
@@ -122,7 +129,7 @@ def add_job(req: JobCreate):
     folder = str(req.folder)
     job_id = str(uuid.uuid4())
 
-    # Comprobar duplicados
+    # Comprobar duplicados (que ya exista un job monitorizando la misma carpeta)
     for key in r.scan_iter("job:*:folder"):
         existing_folder = r.get(key)
         existing_job = key.split(":")[1]
@@ -157,17 +164,17 @@ def add_job(req: JobCreate):
             )
     if req.start and req.end:
         try:
-            start_dt=datetime.fromisoformat(str(req.start))
+            start_dt = datetime.fromisoformat(str(req.start))
             end_dt = datetime.fromisoformat(str(req.end))
         except ValueError:
             raise HTTPException(status_code=400, detail="start/end no tiene formato ISO válido")
-        if end_dt<=start_dt:
-            logger.warning(f"Intento de crear job {job_id} con fecha de fin {end_dt} menor o igual que la de start ({start_dt})")
+        if end_dt <= start_dt:
+            logger.warning(
+                f"Intento de crear job {job_id} con fecha de fin {end_dt} menor o igual que la de start ({start_dt})")
             raise HTTPException(
                 status_code=400,
                 detail="No se puede crear un job con fecha de fin menor o igual que la de start"
             )
-
 
     # Guardar metadatos en Redis
     r.set(f"job:{job_id}:start", str(req.start))
@@ -180,7 +187,8 @@ def add_job(req: JobCreate):
     jobs[job_id] = task
     r.set(f"job:{job_id}:task_id", task.id)
 
-    logger.info(f"Job {job_id} creado con task_id {task.id}, start {str(req.start)}, end {str(req.end)} y folder {folder}")
+    logger.info(
+        f"Job {job_id} creado con task_id {task.id}, start {str(req.start)}, end {str(req.end)} y folder {folder}")
 
     return {
         "job_id": job_id,
@@ -210,7 +218,7 @@ def list_jobs():
 
         active_jobs[job_id] = {
             "celery_status": job.status,
-            "job_state":r.get(f"job:{job_id}:job_state"),
+            "job_state": r.get(f"job:{job_id}:job_state"),
             "start": r.get(f"job:{job_id}:start"),
             "end": r.get(f"job:{job_id}:end"),
             "folder": r.get(f"job:{job_id}:folder"),
@@ -301,15 +309,15 @@ def update_job(job_id: str, req: JobUpdate):
         raise HTTPException(status_code=404, detail="Job no encontrado")
 
     updated_fields = {}
-    original_fields={}
-    now =datetime.now()
+    original_fields = {}
+    now = datetime.now()
 
     # Recuperar valores actuales almacenados en redis (si existen)
     stored_start = r.get(f"job:{job_id}:start")
     stored_end = r.get(f"job:{job_id}:end")
 
-    original_fields["start"]=stored_start
-    original_fields["end"]=stored_end
+    original_fields["start"] = stored_start
+    original_fields["end"] = stored_end
 
     stored_start_dt = datetime.fromisoformat(stored_start) if stored_start else None
     stored_end_dt = datetime.fromisoformat(stored_end) if stored_end else None
@@ -362,7 +370,8 @@ def update_job(job_id: str, req: JobUpdate):
         # 1 No puede ser anterior a ahora
         if start_dt < now:
             logger.warning(f"[{job_id}] Intento inválido: start {start_dt} es anterior a ahora ({now})")
-            raise HTTPException(status_code=400, detail="No se puede modificar la fecha de inicio a un momento anterior a ahora")
+            raise HTTPException(status_code=400,
+                                detail="No se puede modificar la fecha de inicio a un momento anterior a ahora")
 
         # 2️ Si el job ya empezó, no se puede modificar el start
         # Si el job ya empezó, no se puede modificar el start
@@ -381,7 +390,8 @@ def update_job(job_id: str, req: JobUpdate):
         # 3️ Si hay una fecha de fin guardada, start no puede ser posterior a end
         if stored_end_dt and start_dt > stored_end_dt:
             logger.warning(f"[{job_id}] Intento inválido: start {start_dt} posterior al end existente {stored_end_dt}")
-            raise HTTPException(status_code=400, detail="La fecha de inicio no puede ser posterior a la fecha de fin existente")
+            raise HTTPException(status_code=400,
+                                detail="La fecha de inicio no puede ser posterior a la fecha de fin existente")
 
         r.set(f"job:{job_id}:start", str(req.start))
         updated_fields["start"] = str(req.start)
@@ -395,11 +405,13 @@ def update_job(job_id: str, req: JobUpdate):
 
         # 1️ No puede ser anterior a ahora
         if end_dt < now:
-            raise HTTPException(status_code=400, detail="No se puede modificar la fecha de fin a un momento anterior a ahora. Usa /stop para parar el job.")
+            raise HTTPException(status_code=400,
+                                detail="No se puede modificar la fecha de fin a un momento anterior a ahora. Usa /stop para parar el job.")
 
         # 2️ Si hay start almacenado, end no puede ser anterior a start
         if stored_start_dt and end_dt < stored_start_dt:
-            raise HTTPException(status_code=400, detail="La fecha de fin no puede ser anterior a la fecha de inicio existente")
+            raise HTTPException(status_code=400,
+                                detail="La fecha de fin no puede ser anterior a la fecha de inicio existente")
 
         r.set(f"job:{job_id}:end", str(req.end))
         updated_fields["end"] = str(req.end)
@@ -411,11 +423,10 @@ def update_job(job_id: str, req: JobUpdate):
     return {"msg": "Job actualizado", **updated_fields}
 
 
-
 @app.post("/jobs/{job_id}/stop")
 def stop_job(job_id: str):
     """Detiene un job temporalmente (stop=1). No revoca el worker, este sigue funcionando pero
-    el codigo no hace nada
+    el código no hace nada
     """
     if job_id not in jobs:
         raise HTTPException(status_code=404, detail="Job no encontrado")
@@ -454,7 +465,7 @@ def delete_job(job_id: str):
             task.revoke(terminate=True)
             logger.info(f"Tarea {task.id} revocada antes de eliminación.")
     except Exception as e:
-        logger.warning(f"No se pudo revocar tarea {task.id}: {e}",exc_info=True)
+        logger.warning(f"No se pudo revocar tarea {task.id}: {e}", exc_info=True)
 
     r.set(f"job:{job_id}:ready", 1)
     r.set(f"job:{job_id}:job_state", config["JOB_STATE_FINISHED_BY_API"])
@@ -464,7 +475,9 @@ def delete_job(job_id: str):
 
 @app.get("/jobs/{job_id}/health")
 def check_job_health(job_id: str):
-    """Verifica el estado de heartbeat de un worker."""
+    """Verifica el estado de heartbeat de un worker. Nos da info sobre la salud el job, si esta funcionando
+    correctamentne o se ha colgado.
+    """
     heartbeat = r.get(f"job:{job_id}:heartbeat")
     if not heartbeat:
         return {
@@ -493,11 +506,13 @@ def check_job_health(job_id: str):
         "seconds_since_heartbeat": int(seconds_ago)
     }
 
+
 @app.post("/jobs/recover_active_jobs")
 def recover_active_jobs():
     """Ejecuta la lógica de recarga de jobs en celery desde redis"""
     tasks.recover_active_jobs_logic("api")
     return {"msg": "Recover active Jobs ejecutado"}
+
 
 # ===============================
 # ARRANQUE
@@ -508,4 +523,5 @@ rebuild_jobs_from_redis()
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("jobs_API:app", host="0.0.0.0", port=5000, reload=True)
