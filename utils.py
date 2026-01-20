@@ -5,6 +5,8 @@ Grado en Ingeniería Informática - UNIR
 Author: angelopezg3
 Year: 2026
 License: MIT
+
+Módulo para funciones auxiliares de uso común (carga de parámetros, configuración logger, conversión de ficheros...)
 """
 
 import gc
@@ -62,7 +64,7 @@ def setup_logger(config):
         # --- Handler concurrente con rotación por tamaño ---
         file_handler = ConcurrentRotatingFileHandler(
             base_log_file,
-            maxBytes=config["LOG_SIZE_MBS"] * 1024 * 1024,
+            maxBytes= config["LOG_SIZE_MBS"] * 1024 * 1024,
             backupCount=30,
             encoding="utf-8"
         )
@@ -80,7 +82,6 @@ def setup_logger(config):
     logging.getLogger("celery").setLevel(logging.INFO)
 
     return my_logger
-
 
 def parse_datetime(date_str):
     """
@@ -109,13 +110,11 @@ def check_memory_usage():
     memory_mb = process.memory_info().rss / 1024 / 1024
     return memory_mb
 
-
 def force_garbage_collection():
     """
     Fuerza recolección de basura y libera memoria
     """
     gc.collect()
-
 
 def safe_snippet(raw: bytes, max_len: int = 200) -> str:
     """
@@ -145,7 +144,7 @@ def safe_snippet(raw: bytes, max_len: int = 200) -> str:
     return snippet_clean.strip()
 
 
-def ensure_pcap(path: Path, job_id):
+def ensure_pcap(path: Path,job_id):
     """
     Detecta si el archivo es SNOOP (.net) y lo convierte a PCAP si es necesario (genera un archivo que se llama igual
     pero acabado en .pcap en la misma ruta donde esta el .net).
@@ -178,10 +177,10 @@ def ensure_pcap(path: Path, job_id):
             stderr=subprocess.DEVNULL
         )
 
-        return new_path, True
+        return new_path,True
 
     # Si no es SNOOP, devolvemos el archivo tal cual
-    return path, False
+    return path,False
 
 
 config = load_config()
