@@ -21,6 +21,12 @@ from pathlib import Path
 
 
 def load_config():
+    """
+    Carga en memoria el fichero config.json con los parámetros configurables de entrada.
+    Podemos acceder al contenido de este diccionario con config["CLAVE"].
+
+    Returns: diccionario con los parámetros de entrada.
+    """
     # Ruta absoluta basada en la ubicación de este archivo
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
     CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
@@ -33,9 +39,14 @@ def load_config():
 
 def setup_logger(config):
     """
-    Configura logger con rotación por tamaño (LOG_SIZE_MBS MB)
-    compresión automática y compatibilidad multiproceso.
+    Configura logger con rotación por tamaño (LOG_SIZE_MBS MB) compresión automática y compatibilidad multiproceso.
+    Args:
+        config:
+
+    Returns: el logger configurado
+
     """
+
     log_dir = config.get("LOG_DIR", "./logs")
     log_level = getattr(logging, config.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
     os.makedirs(log_dir, exist_ok=True)
@@ -51,7 +62,7 @@ def setup_logger(config):
         # --- Handler concurrente con rotación por tamaño ---
         file_handler = ConcurrentRotatingFileHandler(
             base_log_file,
-            maxBytes= config["LOG_SIZE_MBS"] * 1024 * 1024,
+            maxBytes=config["LOG_SIZE_MBS"] * 1024 * 1024,
             backupCount=30,
             encoding="utf-8"
         )
@@ -70,9 +81,16 @@ def setup_logger(config):
 
     return my_logger
 
-# Función helper para parsear fechas con diferentes formatos
+
 def parse_datetime(date_str):
-    """Intenta parsear una fecha en formato ISO o con espacio"""
+    """
+    Función helper para parsear fechas con diferentes formatos
+
+    Args:
+        date_str: string representando la fecha
+
+    Returns: fecha en objeto datetime
+    """
     try:
         # Intentar formato ISO estándar
         return datetime.fromisoformat(date_str)
@@ -82,19 +100,33 @@ def parse_datetime(date_str):
 
 
 def check_memory_usage():
-    """Verifica el uso de memoria del proceso actual"""
+    """
+    Verifica el uso de memoria del proceso actual
+
+    Returns: cantidad de memoria en uso (en MB)
+    """
     process = psutil.Process(os.getpid())
     memory_mb = process.memory_info().rss / 1024 / 1024
     return memory_mb
 
+
 def force_garbage_collection():
-    """Fuerza recolección de basura y libera memoria"""
+    """
+    Fuerza recolección de basura y libera memoria
+    """
     gc.collect()
+
 
 def safe_snippet(raw: bytes, max_len: int = 200) -> str:
     """
-    convierte un payload en texto eliminando caracteres no imprimibles y saltos, tabuladores...
+    Convierte un payload en texto eliminando caracteres no imprimibles y saltos, tabuladores...
+    Args:
+        raw: entrada
+        max_len: longitud de bytes con la que nos quedamos
+
+    Returns: string con payload limpio
     """
+
     snippet = raw[:max_len]
     try:
         # Decodifica a texto ignorando errores
@@ -113,12 +145,18 @@ def safe_snippet(raw: bytes, max_len: int = 200) -> str:
     return snippet_clean.strip()
 
 
-def ensure_pcap(path: Path,job_id):
+def ensure_pcap(path: Path, job_id):
     """
-    Detecta si el archivo es SNOOP y lo convierte a PCAP si es necesario.
+    Detecta si el archivo es SNOOP (.net) y lo convierte a PCAP si es necesario (genera un archivo que se llama igual
+    pero acabado en .pcap en la misma ruta donde esta el .net).
     Devuelve la ruta del archivo final compatible con Scapy.
+    Args:
+        path: ruta del fichero a comprobar
+        job_id: id del job en curso (para log)
+
+    Returns:
     """
-    # Leer primeros 8 bytes → suficiente para detectar formato SNOOP
+    # Leer primeros 8 bytes para detectar formato SNOOP
     with open(path, "rb") as f:
         magic = f.read(8)
 
@@ -140,10 +178,10 @@ def ensure_pcap(path: Path,job_id):
             stderr=subprocess.DEVNULL
         )
 
-        return new_path,True
+        return new_path, True
 
     # Si no es SNOOP, devolvemos el archivo tal cual
-    return path,False
+    return path, False
 
 
 config = load_config()
