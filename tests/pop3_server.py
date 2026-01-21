@@ -1,3 +1,13 @@
+"""
+Project developed as part of the Trabajo de Fin de Grado (TFG)
+Grado en Ingeniería Informática - UNIR
+
+Author: angelopezg3
+Year: 2026
+License: MIT
+
+Servidor POP3 de pruebas
+"""
 import socket
 import threading
 import sys
@@ -14,12 +24,25 @@ VALID_PASS = "test_pass_123"
 # ----------------------------------
 
 def log_message(msg):
-    """Función simple de logging para ver la actividad del servidor."""
+    """
+    Función simple de logging para ver la actividad del servidor.
+    Args:
+        msg: mensaje a imprimir
+
+    """
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}")
 
 
 def handle_client(conn, addr):
-    """Maneja la lógica de conexión y comandos POP3 de un cliente."""
+    """
+    Maneja la lógica de conexión y comandos POP3 de un cliente.
+
+    Args:
+        conn: socket para la conexión
+        addr: tupla con ip y puerto de origen
+
+    """
+
     log_message(f"Conexión establecida desde {addr}")
 
     # 1. Respuesta de Bienvenida (El servidor siempre debe responder primero)
@@ -87,6 +110,9 @@ def handle_client(conn, addr):
 
 
 def start_pop3_server():
+    """
+    Arranca el servidor pop3
+    """
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         # Permite reusar el puerto inmediatamente
