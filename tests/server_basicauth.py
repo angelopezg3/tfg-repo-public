@@ -1,9 +1,22 @@
+"""
+Project developed as part of the Trabajo de Fin de Grado (TFG)
+Grado en Ingeniería Informática - UNIR
+
+Author: angelopezg3
+Year: 2026
+License: MIT
+
+Servidor HTTP de pruebas con Basic Auth
+"""
+
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import base64
 
 
 class BasicAuthHandler(SimpleHTTPRequestHandler):
-    """Handler con Basic Authentication"""
+    """
+    Handler con Basic Authentication
+    """
 
     # Credenciales: usuario=test, password=1234
     KEY = base64.b64encode(b"test:1234").decode()
@@ -31,6 +44,9 @@ class BasicAuthHandler(SimpleHTTPRequestHandler):
             self.wfile.write(b'Invalid credentials')
 
 def run_basic_auth_server():
+    """
+    Arranca el HTTPServer con basic auth
+    """
     server_address = ('', 8080)
     httpd = HTTPServer(server_address, BasicAuthHandler)
     print("Servidor HTTP con Basic Auth corriendo en http://localhost:8080")
