@@ -1,3 +1,14 @@
+"""
+Project developed as part of the Trabajo de Fin de Grado (TFG)
+Grado en Ingeniería Informática - UNIR
+
+Author: angelopezg3
+Year: 2026
+License: MIT
+
+Servidor FTP de pruebas
+"""
+
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler
 from pyftpdlib.servers import FTPServer
@@ -22,10 +33,18 @@ authorizer.add_user(
     password=FTP_PASS,
     homedir=FTP_DIR,
     perm="elradfmwMT"  # Todos los permisos
+    # Permisos FTP:
+    # e = cambiar de directorio (CWD)
+    # l = listar archivos y directorios (LIST, NLST)
+    # r = descargar / leer archivos (RETR)
+    # a = añadir datos a archivos existentes (APPE)
+    # d = borrar archivos o directorios (DELE, RMD)
+    # f = renombrar archivos (RNFR, RNTO)
+    # m = crear directorios (MKD)
+    # w = subir / escribir archivos (STOR)
+    # M = cambiar permisos de archivos (SITE CHMOD)
+    # T = modificar timestamps de archivos (SITE MFMT)
 )
-
-# Usuario anónimo (opcional)
-# authorizer.add_anonymous(FTP_DIR, perm="elr")
 
 # Configurar handler
 handler = FTPHandler
@@ -34,8 +53,11 @@ handler.authorizer = authorizer
 # Banner personalizado
 handler.banner = "Test FTP Server - Ready"
 
-# Iniciar servidor
+
 def run_ftp_server():
+    """
+    Iniciar servidor
+    """
     server = FTPServer((FTP_HOST, FTP_PORT), handler)
     server.max_cons = 3
     server.max_cons_per_ip = 5
