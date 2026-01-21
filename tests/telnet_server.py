@@ -1,3 +1,14 @@
+"""
+Project developed as part of the Trabajo de Fin de Grado (TFG)
+Grado en Ingeniería Informática - UNIR
+
+Author: angelopezg3
+Year: 2026
+License: MIT
+
+Servidor telnet local de pruebas básico
+"""
+
 import socket
 import threading
 import sys
@@ -11,7 +22,15 @@ VALID_PASS = "prueba123"
 
 
 def handle_client(conn, addr):
-    """Maneja la lógica de conexión y autenticación de un cliente."""
+    """
+    Maneja la lógica de conexión y autenticación de un cliente.
+
+    Args:
+        conn: socket para la conexión
+        addr: tupla con ip y puerto de origen
+
+    """
+
     print(f"[+] Conexión establecida desde {addr}")
 
     # 1. Bienvenida y Solicitud de Login
@@ -62,7 +81,9 @@ def handle_client(conn, addr):
 
 
 def start_telnet_server():
-    """Inicializa y escucha por conexiones entrantes."""
+    """
+    Inicializa el servidor y escucha por conexiones entrantes.
+    """
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
     try:
@@ -90,5 +111,4 @@ def start_telnet_server():
 
 
 if __name__ == "__main__":
-    # Asegúrate de ejecutar como administrador/sudo si usas el puerto 23
     start_telnet_server()
