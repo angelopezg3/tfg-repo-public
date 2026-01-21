@@ -1,3 +1,14 @@
+"""
+Project developed as part of the Trabajo de Fin de Grado (TFG)
+Grado en Ingeniería Informática - UNIR
+
+Author: angelopezg3
+Year: 2026
+License: MIT
+
+Módulo que arranca todos los servers de pruebas (cada uno en un hilo de ejecución distinto)
+"""
+
 import ftp_server
 import server_basicauth
 import telnet_server
@@ -19,7 +30,7 @@ def run_all_servers():
     t3.start()
     t4.start()
 
-    print(" Servidores iniciados: FTP (21), HTTP (8080), telnet (23)")
+    print(" Servidores iniciados: FTP (21), POP(110), HTTP (8080), telnet (23)")
     print("Presiona Ctrl+C para detener.")
 
     # Mantener el proceso principal vivo
